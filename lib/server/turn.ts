@@ -15,8 +15,11 @@ function motionInstruction(choices: MotionHotkeyChoice[]) {
     return "利用できるVTube Studioモーションはありません。[motion:...] や [タグ] のようなモーション記法を絶対に出力しないでください。"
   }
   return [
-    "必要なときだけ、発話文の先頭に [motion:タグ] を付けてください。タグの直後に読み上げる文章を書いてください。",
-    "次の実在するタグ以外は使わないでください。モーションを使わない文には角括弧の記法を付けません。タグ自体は読み上げられません。",
+    "VTube Studioの動きを、発話する各文章ごとに1つ選んでください。",
+    "各文章は必ず [motion:タグ] から始め、タグの直後に読み上げる文章を書いてください。",
+    "タグ部分は読み上げられません。次の一覧にあるタグ以外は絶対に出力しないでください。",
+    "例: [motion:angry]ちょっと、それは聞き捨てならないよ！",
+    "利用可能な動き:",
     ...choices.map(({ tag, name }) => `- ${tag}: ${name}`),
   ].join("\n")
 }
@@ -64,7 +67,11 @@ export async function writeTurn(options: {
   let sentenceIndex = 0
   let nextAudioEventIndex = 1
   let isLlmDone = false
-  serverLog("turn.started", { turnId, inputMessages: options.messages.length, motionHotkeys: allowed.size })
+  serverLog("turn.started", {
+    turnId,
+    inputMessages: options.messages.length,
+    motionHotkeys: options.motionHotkeys,
+  })
 
   const wakeAudioEventWaiters = () => {
     for (const resolve of audioEventWaiters) resolve()

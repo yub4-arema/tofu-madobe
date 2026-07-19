@@ -120,6 +120,7 @@ export function Companion() {
   const [conversationHistory, setConversationHistory] = useState<ConversationHistoryItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [vtubeConnected, setVtubeConnected] = useState(false)
+  const [autoSilenceRemaining, setAutoSilenceRemaining] = useState<number | null>(null)
   const submitRef = useRef<(mode: SubmitMode) => Promise<void>>(async () => undefined)
 
   useEffect(() => {
@@ -231,6 +232,7 @@ export function Companion() {
   }, [phase, running, settings.interactionMode, settings.maxMinutes, settings.maxSeconds, settings.minMinutes, settings.minSeconds])
 
   useEffect(() => {
+    setAutoSilenceRemaining(null)
     if (
       !running ||
       !micEnabled ||
@@ -239,10 +241,27 @@ export function Companion() {
       recorder.speaking ||
       recorder.speechSeconds < settings.autoMinSpeechSeconds
     ) return
+
+    const silenceMs = settings.autoSilenceSeconds * 1000
+    const deadline = performance.now() + silenceMs
+    const updateRemaining = () => {
+      setAutoSilenceRemaining(Math.max(0, (deadline - performance.now()) / 1000))
+    }
+    updateRemaining()
+    const intervalId = window.setInterval(updateRemaining, 100)
     const timeoutId = window.setTimeout(() => {
+      window.clearInterval(intervalId)
+      setAutoSilenceRemaining(0)
+      console.log("[tofu-madobe] auto conversation silence elapsed", {
+        speechSeconds: recorder.speechSeconds,
+        silenceSeconds: settings.autoSilenceSeconds,
+      })
       void submitRef.current("auto")
-    }, settings.autoSilenceSeconds * 1000)
-    return () => window.clearTimeout(timeoutId)
+    }, silenceMs)
+    return () => {
+      window.clearInterval(intervalId)
+      window.clearTimeout(timeoutId)
+    }
   }, [
     micEnabled,
     phase,
@@ -303,6 +322,9 @@ export function Companion() {
 
   const shownError = error ?? audioQueue.error
   const statusVariant = phase === "stopped" ? "secondary" : phase === "listening" ? "outline" : "default"
+  const totalSpeechSeconds = recorder.speechSeconds + recorder.currentSpeechSeconds
+  const inputLevelPercent = recorder.level * 100
+  const voiceThreshold = settings.voiceThresholdPercent / 100
 
   return (
     <main className="flex min-h-svh items-center justify-center bg-muted/40 p-3">
@@ -346,7 +368,14 @@ export function Companion() {
                 </div>
                 <Switch checked={micEnabled} onCheckedChange={toggleMic} disabled={!running} aria-label="マイク" />
               </div>
-              <Progress value={Math.round(recorder.level * 100)} aria-label="入力音量" />
+              <Progress
+                value={Math.min(100, Math.round(inputLevelPercent * 10))}
+                aria-label="入力音量"
+              />
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>入力 {inputLevelPercent.toFixed(1)}%</span>
+                <span>判定しきい値 {(voiceThreshold * 100).toFixed(1)}%</span>
+              </div>
 
               <div className="flex flex-col gap-2">
                 <Tabs value={settings.interactionMode} onValueChange={changeInteractionMode}>
@@ -360,6 +389,20 @@ export function Companion() {
                   <RadioIcon />
                   <span className="text-xs text-muted-foreground">{modeDescription(settings)}</span>
                 </div>
+                {settings.interactionMode === "auto" ? (
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <Badge variant={recorder.speaking ? "default" : "outline"}>
+                      {recorder.speaking
+                        ? "発話検知中"
+                        : autoSilenceRemaining !== null
+                          ? `送信まで ${autoSilenceRemaining.toFixed(1)}秒`
+                          : "発話待ち"}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      発話 {totalSpeechSeconds.toFixed(1)} / {settings.autoMinSpeechSeconds.toFixed(1)}秒
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               {reply ? (

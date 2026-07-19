@@ -21,6 +21,7 @@ export function useIntervalRecorder() {
   const [bufferedSeconds, setBufferedSeconds] = useState(0)
   const [speaking, setSpeaking] = useState(false)
   const [speechSeconds, setSpeechSeconds] = useState(0)
+  const [currentSpeechSeconds, setCurrentSpeechSeconds] = useState(0)
   const [speechEndCount, setSpeechEndCount] = useState(0)
 
   const refreshDuration = useCallback(() => {
@@ -69,13 +70,24 @@ export function useIntervalRecorder() {
         finalizeCurrent()
         const duration = Math.max(0, Number(event.data.speechSeconds) || 0)
         speechSecondsRef.current += duration
+        console.log("[tofu-madobe] VAD speech ended", {
+          segmentSpeechSeconds: duration,
+          accumulatedSpeechSeconds: speechSecondsRef.current,
+          threshold: voiceThresholdRef.current,
+        })
         setSpeechSeconds(speechSecondsRef.current)
+        setCurrentSpeechSeconds(0)
         setSpeaking(false)
         setSpeechEndCount((count) => count + 1)
       } else if (event.data?.type === "speech-start") {
+        console.log("[tofu-madobe] VAD speech started", {
+          threshold: voiceThresholdRef.current,
+          accumulatedSpeechSeconds: speechSecondsRef.current,
+        })
         setSpeaking(true)
       } else if (event.data?.type === "level") {
         setLevel(Number(event.data.value) || 0)
+        setCurrentSpeechSeconds(Math.max(0, Number(event.data.currentSpeechSeconds) || 0))
       }
     }
     contextRef.current = context
@@ -112,6 +124,7 @@ export function useIntervalRecorder() {
     speechSecondsRef.current = 0
     setBufferedSeconds(0)
     setSpeechSeconds(0)
+    setCurrentSpeechSeconds(0)
     setSpeaking(false)
   }, [])
 
@@ -123,6 +136,7 @@ export function useIntervalRecorder() {
     speechSecondsRef.current = 0
     setBufferedSeconds(0)
     setSpeechSeconds(0)
+    setCurrentSpeechSeconds(0)
     if (!segments.length) return null
     return encodeSpeechSegments(segments, sampleRateRef.current)
   }, [finalizeCurrent])
@@ -144,6 +158,7 @@ export function useIntervalRecorder() {
     setLevel(0)
     setBufferedSeconds(0)
     setSpeechSeconds(0)
+    setCurrentSpeechSeconds(0)
     setSpeaking(false)
   }, [])
 
@@ -160,6 +175,7 @@ export function useIntervalRecorder() {
     level,
     bufferedSeconds,
     speechSeconds,
+    currentSpeechSeconds,
     speaking,
     speechEndCount,
   }

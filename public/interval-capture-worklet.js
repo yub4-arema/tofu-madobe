@@ -6,7 +6,6 @@ class IntervalCaptureProcessor extends AudioWorkletProcessor {
     this.silenceSamples = 0
     this.voicedSamples = 0
     this.speechSamples = 0
-    this.noiseFloor = 0.004
     this.minimumThreshold = 0.02
     this.preRoll = []
     this.levelCounter = 0
@@ -45,15 +44,20 @@ class IntervalCaptureProcessor extends AudioWorkletProcessor {
     let energy = 0
     for (let index = 0; index < channel.length; index += 1) energy += channel[index] * channel[index]
     const rms = Math.sqrt(energy / channel.length)
+    const threshold = this.minimumThreshold
+    const voiced = rms >= threshold
     this.levelCounter += 1
     if (this.levelCounter >= 8) {
       this.levelCounter = 0
-      this.port.postMessage({ type: "level", value: Math.min(1, rms * 12) })
+      this.port.postMessage({
+        type: "level",
+        value: rms,
+        threshold: this.minimumThreshold,
+        voiced,
+        speaking: this.speaking,
+        currentSpeechSeconds: this.speechSamples / sampleRate,
+      })
     }
-
-    if (!this.speaking) this.noiseFloor = this.noiseFloor * 0.995 + Math.min(rms, 0.03) * 0.005
-    const threshold = Math.max(this.minimumThreshold, this.noiseFloor * 4)
-    const voiced = rms >= threshold
 
     if (voiced) {
       if (!this.speaking) {

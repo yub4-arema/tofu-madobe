@@ -16,6 +16,7 @@
     "start": "next start",
     "start:local": "node scripts/start.mjs local",
     "start:api": "node scripts/start.mjs api",
+    "vtube:check": "node scripts/check-vtube-studio.mjs",
     "lint": "oxlint",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
