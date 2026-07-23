@@ -1,582 +1,467 @@
-"use client"
+"use client";
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ChevronDownIcon,
-  ChevronUpIcon,
   MicIcon,
   PanelTopOpenIcon,
   PlayIcon,
-  RadioIcon,
   SendIcon,
   SettingsIcon,
   SquareIcon,
-  Trash2Icon,
-} from "lucide-react"
-import { toast } from "sonner"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { Progress } from "@/components/ui/progress"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
-import { Slider } from "@/components/ui/slider"
-import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
-import { useAudioQueue } from "@/hooks/use-audio-queue"
-import { useIntervalRecorder } from "@/hooks/use-interval-recorder"
-import { readNdjson } from "@/lib/ndjson"
-import { isTurnEvent, type MotionHotkeyChoice } from "@/lib/protocol"
-import { vtubeStudio } from "@/lib/vtube-studio"
+} from "lucide-react";
+import { useAudioQueue } from "@/hooks/use-audio-queue";
+import { useIntervalRecorder } from "@/hooks/use-interval-recorder";
+import { isTurnEvent, type MotionHotkeyChoice } from "@/lib/protocol";
+import { prepareMotionHotkeys } from "@/lib/vtube-studio";
 
-type Phase = "stopped" | "listening" | "requesting" | "playing"
-type SubmitMode = "manual" | "scheduled" | "auto"
-type InteractionMode = "manual" | "scheduled" | "auto"
-type ConversationHistoryItem = { role: "assistant"; content: string }
+type Mode = "manual" | "scheduled" | "auto";
+type Phase = "stopped" | "listening" | "requesting" | "playing";
 type Settings = {
-  interactionMode: InteractionMode
-  minMinutes: number
-  maxMinutes: number
-  minSeconds: number
-  maxSeconds: number
-  autoMinSpeechSeconds: number
-  autoSilenceSeconds: number
-  voiceThresholdPercent: number
-  system: string
-  soloPrompt: string
-}
+  mode: Mode;
+  minSeconds: number;
+  maxSeconds: number;
+  autoMinSpeechSeconds: number;
+  autoSilenceSeconds: number;
+  voiceThresholdPercent: number;
+  system: string;
+  soloPrompt: string;
+};
 
-const defaultSettings: Settings = {
-  interactionMode: "scheduled",
-  minMinutes: 3,
-  maxMinutes: 7,
-  minSeconds: 0,
-  maxSeconds: 0,
+const defaults: Settings = {
+  mode: "scheduled",
+  minSeconds: 180,
+  maxSeconds: 420,
   autoMinSpeechSeconds: 2,
   autoSilenceSeconds: 2,
   voiceThresholdPercent: 2,
   system: "",
-  soloPrompt: "直近の話題と重複しない、聞いて楽しめる短い話題を一つ自然に話してください。待機や自動発言には触れないでください。",
+  soloPrompt:
+    "直近の話題と重複しない、聞いて楽しめる短い話題を一つ自然に話してください。待機や自動発言には触れないでください。",
+};
+
+function status(phase: Phase, mic: boolean) {
+  if (phase === "listening") return mic ? "録音中" : "待機中";
+  if (phase === "requesting") return "返答を生成中";
+  if (phase === "playing") return "発話中";
+  return "停止中";
 }
 
-function phaseLabel(phase: Phase, micEnabled: boolean) {
-  if (phase === "listening") return micEnabled ? "録音中" : "待機中"
-  if (phase === "requesting") return "返答を生成中"
-  if (phase === "playing") return "発話中"
-  return "停止中"
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
-function secondsLabel(seconds: number) {
-  if (seconds < 1) return "まだ発話なし"
-  const minutes = Math.floor(seconds / 60)
-  const rest = Math.round(seconds % 60)
-  return minutes ? `${minutes}分${rest}秒の発話` : `${rest}秒の発話`
-}
-
-function modeDescription(settings: Settings) {
-  if (settings.interactionMode === "auto") {
-    return `${settings.autoMinSpeechSeconds}秒以上の発話後、${settings.autoSilenceSeconds}秒無音で送信`
+async function readStream(response: Response, onEvent: (value: unknown) => void) {
+  if (!response.body) throw new Error("応答ストリームがありません。");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    pending += decoder.decode(value, { stream: !done });
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) onEvent(JSON.parse(line));
+    if (done) break;
   }
-  if (settings.interactionMode === "scheduled") {
-    return `${settings.minMinutes}分${settings.minSeconds}秒〜${settings.maxMinutes}分${settings.maxSeconds}秒後に録音を送信`
-  }
-  return "今すぐ送るボタンでのみ送信"
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.min(Math.max(value, minimum), maximum)
+  if (pending.trim()) onEvent(JSON.parse(pending));
 }
 
 export function Companion() {
-  const recorder = useIntervalRecorder()
-  const audioQueue = useAudioQueue()
-  const [phase, setPhase] = useState<Phase>("stopped")
-  const [running, setRunning] = useState(false)
-  const [micEnabled, setMicEnabled] = useState(true)
-  const [compact, setCompact] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settings, setSettings] = useState<Settings>(defaultSettings)
-  const [reply, setReply] = useState("")
-  const [conversationHistory, setConversationHistory] = useState<ConversationHistoryItem[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [vtubeConnected, setVtubeConnected] = useState(false)
-  const [autoSilenceRemaining, setAutoSilenceRemaining] = useState<number | null>(null)
-  const submitRef = useRef<(mode: SubmitMode) => Promise<void>>(async () => undefined)
+  const recorder = useIntervalRecorder();
+  const audio = useAudioQueue();
+  const [phase, setPhase] = useState<Phase>("stopped");
+  const [running, setRunning] = useState(false);
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [compact, setCompact] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState(defaults);
+  const [reply, setReply] = useState("");
+  const [history, setHistory] = useState<Array<{ role: "assistant"; content: string }>>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [vtubeConnected, setVtubeConnected] = useState(false);
+  const submitRef = useRef<(mode: Mode) => Promise<void>>(async () => undefined);
 
   useEffect(() => {
-    const stored = localStorage.getItem("tofu-madobe:settings")
-    if (stored) {
-      queueMicrotask(() => {
-        try { setSettings({ ...defaultSettings, ...JSON.parse(stored) as Partial<Settings> }) } catch { /* use defaults */ }
-      })
-    }
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem("tofu-madobe:settings", JSON.stringify(settings))
-  }, [settings])
-
-  const setVoiceThreshold = recorder.setVoiceThreshold
-  useEffect(() => {
-    setVoiceThreshold(settings.voiceThresholdPercent / 100)
-  }, [setVoiceThreshold, settings.voiceThresholdPercent])
-
-  const submit = useCallback(async (mode: SubmitMode) => {
-    if (!running || (phase !== "listening" && phase !== "stopped")) return
-    recorder.setEnabled(false)
-    const audio = recorder.takeWav()
-    if (!audio && mode === "manual") {
-      recorder.setEnabled(micEnabled)
-      toast.info("送信できる録音がまだありません。")
-      return
-    }
-    setError(null)
-    setReply("")
-    setPhase("requesting")
-    let motionHotkeys: MotionHotkeyChoice[] = []
     try {
-      motionHotkeys = await vtubeStudio.prepare()
-      setVtubeConnected(true)
-    } catch (caught) {
-      setVtubeConnected(false)
-      const message = caught instanceof Error ? caught.message : "VTube Studioのモーションを読み込めません。"
-      console.warn("[tofu-madobe]", message)
+      const saved = localStorage.getItem("tofu-madobe:settings");
+      if (saved) setSettings({ ...defaults, ...(JSON.parse(saved) as Partial<Settings>) });
+    } catch {
+      /* defaults */
     }
+  }, []);
+  useEffect(
+    () => localStorage.setItem("tofu-madobe:settings", JSON.stringify(settings)),
+    [settings],
+  );
+  useEffect(
+    () => recorder.setVoiceThreshold(settings.voiceThresholdPercent / 100),
+    [recorder.setVoiceThreshold, settings.voiceThresholdPercent],
+  );
 
-    const form = new FormData()
-    form.set("mode", mode)
-    form.set("system", settings.system)
-    form.set("soloPrompt", settings.soloPrompt)
-    form.set("motionHotkeys", JSON.stringify(motionHotkeys))
-    form.set("history", JSON.stringify(conversationHistory.slice(-16)))
-    if (audio) form.set("audio", audio, "interval.wav")
-
-    try {
-      const response = await fetch("/api/turn/stream", { method: "POST", body: form })
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: { message?: string } } | null
-        throw new Error(body?.error?.message ?? "返答の生成に失敗しました。")
+  const submit = useCallback(
+    async (mode: Mode) => {
+      if (!running || phase !== "listening") return;
+      recorder.setEnabled(false);
+      const recording = recorder.takeWav();
+      if (!recording && mode === "manual") {
+        recorder.setEnabled(micEnabled);
+        setError("送信できる録音がまだありません。");
+        return;
       }
-      await readNdjson(response, (value) => {
-        if (!isTurnEvent(value)) return
-        if (value.type === "text.delta") setReply((current) => current + value.delta)
-        if (value.type === "audio.ready") {
-          setPhase("playing")
-          audioQueue.enqueue({
-            sentenceIndex: value.sentenceIndex,
-            text: value.text,
-            motionTag: value.motionTag,
-            audioUrl: new URL(value.audioUrl, location.origin).toString(),
-          })
-        }
-        if (value.type === "turn.completed") {
-          setReply(value.text)
-          setConversationHistory((current) => [
-            ...current,
-            { role: "assistant" as const, content: value.text },
-          ].slice(-16))
-        }
-        if (value.type === "turn.error") throw new Error(value.error.message)
-      })
-      await audioQueue.waitForIdle()
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "返答の生成に失敗しました。"
-      setError(message)
-      toast.error(message)
-    } finally {
-      if (running) {
-        setPhase("listening")
-        recorder.setEnabled(micEnabled)
-      } else {
-        setPhase("stopped")
+      setError(null);
+      setReply("");
+      setPhase("requesting");
+      let motionHotkeys: MotionHotkeyChoice[] = [];
+      try {
+        motionHotkeys = await prepareMotionHotkeys();
+        setVtubeConnected(true);
+      } catch {
+        setVtubeConnected(false);
       }
-    }
-  }, [audioQueue, conversationHistory, micEnabled, phase, recorder, running, settings])
+      const form = new FormData();
+      form.set("mode", mode);
+      form.set("system", settings.system);
+      form.set("soloPrompt", settings.soloPrompt);
+      form.set("history", JSON.stringify(history.slice(-16)));
+      form.set("motionHotkeys", JSON.stringify(motionHotkeys));
+      if (recording) form.set("audio", recording, "interval.wav");
+      try {
+        const response = await fetch("/api/turn/stream", { method: "POST", body: form });
+        if (!response.ok)
+          throw new Error(
+            ((await response.json().catch(() => null)) as { error?: { message?: string } } | null)
+              ?.error?.message ?? "返答の生成に失敗しました。",
+          );
+        await readStream(response, (value) => {
+          if (!isTurnEvent(value)) return;
+          if (value.type === "text.delta") setReply((current) => current + value.delta);
+          if (value.type === "audio.ready") {
+            setPhase("playing");
+            audio.enqueue({
+              ...value,
+              audioUrl: new URL(value.audioUrl, location.origin).toString(),
+            });
+          }
+          if (value.type === "turn.completed") {
+            setReply(value.text);
+            setHistory((current) =>
+              [...current, { role: "assistant" as const, content: value.text }].slice(-16),
+            );
+          }
+          if (value.type === "turn.error") throw new Error(value.error.message);
+        });
+        await audio.waitForIdle();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "返答の生成に失敗しました。");
+      } finally {
+        setPhase(running ? "listening" : "stopped");
+        if (running) recorder.setEnabled(micEnabled);
+      }
+    },
+    [audio, history, micEnabled, phase, recorder, running, settings],
+  );
 
   useEffect(() => {
-    submitRef.current = submit
-  }, [submit])
-
+    submitRef.current = submit;
+  }, [submit]);
   useEffect(() => {
-    if (!running || settings.interactionMode !== "scheduled" || phase !== "listening") return
+    if (!running || phase !== "listening" || settings.mode !== "scheduled") return;
     const source = new EventSource(
-      `/api/schedule?min=${settings.minMinutes * 60 + settings.minSeconds}&max=${settings.maxMinutes * 60 + settings.maxSeconds}`
-    )
-    const handleDue = () => {
-      source.close()
-      void submitRef.current("scheduled")
-    }
-    source.addEventListener("due", handleDue)
-    source.onerror = () => source.close()
-    return () => source.close()
-  }, [phase, running, settings.interactionMode, settings.maxMinutes, settings.maxSeconds, settings.minMinutes, settings.minSeconds])
-
+      `/api/schedule?min=${settings.minSeconds}&max=${settings.maxSeconds}`,
+    );
+    source.addEventListener("due", () => {
+      source.close();
+      void submitRef.current("scheduled");
+    });
+    source.onerror = () => source.close();
+    return () => source.close();
+  }, [phase, running, settings.maxSeconds, settings.minSeconds, settings.mode]);
   useEffect(() => {
-    setAutoSilenceRemaining(null)
     if (
       !running ||
       !micEnabled ||
-      settings.interactionMode !== "auto" ||
       phase !== "listening" ||
+      settings.mode !== "auto" ||
       recorder.speaking ||
       recorder.speechSeconds < settings.autoMinSpeechSeconds
-    ) return
-
-    const silenceMs = settings.autoSilenceSeconds * 1000
-    const deadline = performance.now() + silenceMs
-    const updateRemaining = () => {
-      setAutoSilenceRemaining(Math.max(0, (deadline - performance.now()) / 1000))
-    }
-    updateRemaining()
-    const intervalId = window.setInterval(updateRemaining, 100)
-    const timeoutId = window.setTimeout(() => {
-      window.clearInterval(intervalId)
-      setAutoSilenceRemaining(0)
-      console.log("[tofu-madobe] auto conversation silence elapsed", {
-        speechSeconds: recorder.speechSeconds,
-        silenceSeconds: settings.autoSilenceSeconds,
-      })
-      void submitRef.current("auto")
-    }, silenceMs)
-    return () => {
-      window.clearInterval(intervalId)
-      window.clearTimeout(timeoutId)
-    }
+    )
+      return;
+    const timer = window.setTimeout(
+      () => void submitRef.current("auto"),
+      settings.autoSilenceSeconds * 1000,
+    );
+    return () => window.clearTimeout(timer);
   }, [
     micEnabled,
     phase,
-    recorder.speechSeconds,
     recorder.speaking,
     recorder.speechEndCount,
+    recorder.speechSeconds,
     running,
     settings.autoMinSpeechSeconds,
     settings.autoSilenceSeconds,
-    settings.interactionMode,
-  ])
+    settings.mode,
+  ]);
 
-  const start = useCallback(async () => {
+  const start = async () => {
     try {
-      await recorder.start()
-      recorder.setEnabled(micEnabled)
-      setRunning(true)
-      setPhase("listening")
-      setError(null)
-      toast.success("常駐を開始しました。")
+      await recorder.start();
+      recorder.setEnabled(micEnabled);
+      setRunning(true);
+      setPhase("listening");
+      setError(null);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "マイクを開始できません。"
-      setError(message)
-      toast.error(message)
+      setError(caught instanceof Error ? caught.message : "マイクを開始できません。");
     }
-  }, [micEnabled, recorder])
-
-  const stop = useCallback(() => {
-    setRunning(false)
-    setPhase("stopped")
-    recorder.stop()
-    audioQueue.stop()
-  }, [audioQueue, recorder])
-
-  const toggleMic = useCallback((checked: boolean) => {
-    setMicEnabled(checked)
-    if (running && phase === "listening") recorder.setEnabled(checked)
-  }, [phase, recorder, running])
-
-  const changeInteractionMode = useCallback((value: string) => {
-    if (value !== "manual" && value !== "scheduled" && value !== "auto") return
-    recorder.clear()
-    setSettings((current) => ({ ...current, interactionMode: value }))
-  }, [recorder])
-
-  const openPopup = () => {
-    window.open(location.href, "tofu-madobe", "popup=yes,width=420,height=720,resizable=yes")
-  }
-
-  const clearHistory = async () => {
-    const response = await fetch("/api/history", { method: "DELETE" })
-    if (response.ok) {
-      setConversationHistory([])
-      toast.success("会話履歴と送信済み録音を消去しました。")
-    }
-    else toast.error("履歴を消去できませんでした。")
-  }
-
-  const shownError = error ?? audioQueue.error
-  const statusVariant = phase === "stopped" ? "secondary" : phase === "listening" ? "outline" : "default"
-  const totalSpeechSeconds = recorder.speechSeconds + recorder.currentSpeechSeconds
-  const inputLevelPercent = recorder.level * 100
-  const voiceThreshold = settings.voiceThresholdPercent / 100
+  };
+  const stop = () => {
+    setRunning(false);
+    setPhase("stopped");
+    recorder.stop();
+    audio.stop();
+  };
+  const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
+    setSettings((current) => ({ ...current, [key]: value }));
+  const shownError = error ?? audio.error;
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-muted/40 p-3">
-      <Card className="w-full max-w-[420px]" size={compact ? "sm" : "default"}>
-        <Collapsible open={!compact} onOpenChange={(open) => setCompact(!open)}>
-          <CardHeader>
-            <CardTitle>tofu-madobe</CardTitle>
-            <CardDescription>{phaseLabel(phase, micEnabled)}</CardDescription>
-            <CardAction className="flex items-center gap-2">
-              <Badge variant={statusVariant}>{phaseLabel(phase, micEnabled)}</Badge>
-              <CollapsibleTrigger
-                render={<Button variant="ghost" size="icon-sm" aria-label={compact ? "展開" : "折りたたむ"} />}
-              >
-                {compact ? <ChevronDownIcon /> : <ChevronUpIcon />}
-              </CollapsibleTrigger>
-            </CardAction>
-          </CardHeader>
-
-          {compact ? (
-            <CardFooter className="justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <MicIcon />
-                <Switch checked={micEnabled} onCheckedChange={toggleMic} disabled={!running} aria-label="マイク" />
-              </div>
-              <Button size="sm" onClick={() => void submit("manual")} disabled={!running || phase !== "listening"}>
-                <SendIcon data-icon="inline-start" />
-                今すぐ送る
-              </Button>
-            </CardFooter>
-          ) : null}
-
-          <CollapsibleContent>
-            <CardContent className="flex flex-col gap-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <MicIcon />
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium">マイク</span>
-                    <span className="text-xs text-muted-foreground">{secondsLabel(recorder.bufferedSeconds)}</span>
-                  </div>
-                </div>
-                <Switch checked={micEnabled} onCheckedChange={toggleMic} disabled={!running} aria-label="マイク" />
-              </div>
-              <Progress
-                value={Math.min(100, Math.round(inputLevelPercent * 10))}
-                aria-label="入力音量"
-              />
-              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>入力 {inputLevelPercent.toFixed(1)}%</span>
-                <span>判定しきい値 {(voiceThreshold * 100).toFixed(1)}%</span>
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <Tabs value={settings.interactionMode} onValueChange={changeInteractionMode}>
-                  <TabsList className="w-full">
-                    <TabsTrigger value="manual">手動</TabsTrigger>
-                    <TabsTrigger value="scheduled">定期実行</TabsTrigger>
-                    <TabsTrigger value="auto">自動対話</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                <div className="flex items-center gap-2">
-                  <RadioIcon />
-                  <span className="text-xs text-muted-foreground">{modeDescription(settings)}</span>
-                </div>
-                {settings.interactionMode === "auto" ? (
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <Badge variant={recorder.speaking ? "default" : "outline"}>
-                      {recorder.speaking
-                        ? "発話検知中"
-                        : autoSilenceRemaining !== null
-                          ? `送信まで ${autoSilenceRemaining.toFixed(1)}秒`
-                          : "発話待ち"}
-                    </Badge>
-                    <span className="text-muted-foreground">
-                      発話 {totalSpeechSeconds.toFixed(1)} / {settings.autoMinSpeechSeconds.toFixed(1)}秒
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-
-              {reply ? (
-                <ScrollArea className="max-h-44 rounded-lg border p-3">
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed" aria-live="polite">{audioQueue.playingText || reply}</p>
-                </ScrollArea>
-              ) : null}
-
-              {shownError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>エラー</AlertTitle>
-                  <AlertDescription>{shownError}</AlertDescription>
-                </Alert>
-              ) : null}
-
-              <div className="flex gap-2">
-                {running ? (
-                  <Button variant="outline" onClick={stop}>
-                    <SquareIcon data-icon="inline-start" />
-                    停止
-                  </Button>
-                ) : (
-                  <Button onClick={() => void start()}>
-                    <PlayIcon data-icon="inline-start" />
-                    常駐を開始
-                  </Button>
-                )}
-                <Button
-                  className="flex-1"
-                  onClick={() => void submit("manual")}
-                  disabled={!running || phase !== "listening"}
-                >
-                  {phase === "requesting" || phase === "playing" ? <Spinner data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}
-                  今すぐ送る
-                </Button>
-              </div>
-            </CardContent>
-
-            <CardFooter className="mt-4 justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline">VTube {vtubeConnected ? "接続" : "任意"}</Badge>
-                <span>閉じる・PCスリープでは停止</span>
-              </div>
-              <div className="flex gap-1">
-                <Button variant="ghost" size="icon-sm" onClick={openPopup} aria-label="小窓で開く">
-                  <PanelTopOpenIcon />
-                </Button>
-                <Button variant="ghost" size="icon-sm" onClick={() => setSettingsOpen(true)} aria-label="設定">
-                  <SettingsIcon />
-                </Button>
-              </div>
-            </CardFooter>
-          </CollapsibleContent>
-        </Collapsible>
-      </Card>
-
-      <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>設定</SheetTitle>
-            <SheetDescription>録音区間とAItuberの話し方を設定します。</SheetDescription>
-          </SheetHeader>
-          <div className="overflow-y-auto px-4 pb-4">
-            <FieldGroup>
-              <Field>
-                <FieldLabel>定期実行の範囲（分）</FieldLabel>
-                <Slider
-                  min={0}
-                  max={30}
-                  step={1}
-                  value={[settings.minMinutes, settings.maxMinutes]}
-                  onValueChange={(value) => {
-                    const values = Array.isArray(value) ? value : [3, 7]
-                    setSettings((current) => ({ ...current, minMinutes: values[0], maxMinutes: values[1] }))
-                  }}
-                />
-                <FieldDescription>{settings.minMinutes}〜{settings.maxMinutes}分の間で毎回ランダムです。</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel>定期実行の範囲（秒）</FieldLabel>
-                <Slider
-                  min={0}
-                  max={59}
-                  step={1}
-                  value={[settings.minSeconds, settings.maxSeconds]}
-                  onValueChange={(value) => {
-                    const values = Array.isArray(value) ? value : [0, 0]
-                    setSettings((current) => ({ ...current, minSeconds: values[0], maxSeconds: values[1] }))
-                  }}
-                />
-                <FieldDescription>{settings.minSeconds}〜{settings.maxSeconds}秒を加算します。</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel>自動対話: 最低発話時間</FieldLabel>
-                <Input
-                  type="number"
-                  min={1}
-                  max={10}
-                  step={0.5}
-                  value={settings.autoMinSpeechSeconds}
-                  onChange={(event) => {
-                    const seconds = Number(event.target.value)
-                    if (Number.isFinite(seconds)) {
-                      setSettings((current) => ({ ...current, autoMinSpeechSeconds: clamp(seconds, 1, 10) }))
-                    }
-                  }}
-                />
-                <FieldDescription>{settings.autoMinSpeechSeconds}秒以上の発話を自動送信の対象にします。</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel>自動対話: 無音時間</FieldLabel>
-                <Input
-                  type="number"
-                  min={1}
-                  max={10}
-                  step={0.5}
-                  value={settings.autoSilenceSeconds}
-                  onChange={(event) => {
-                    const seconds = Number(event.target.value)
-                    if (Number.isFinite(seconds)) {
-                      setSettings((current) => ({ ...current, autoSilenceSeconds: clamp(seconds, 1, 10) }))
-                    }
-                  }}
-                />
-                <FieldDescription>{settings.autoSilenceSeconds}秒間の無音で自動送信します。</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel>音声しきい値</FieldLabel>
-                <Input
-                  type="number"
-                  min={0.5}
-                  max={10}
-                  step={0.5}
-                  value={settings.voiceThresholdPercent}
-                  onChange={(event) => {
-                    const percent = Number(event.target.value)
-                    if (Number.isFinite(percent)) {
-                      setSettings((current) => ({ ...current, voiceThresholdPercent: clamp(percent, 0.5, 10) }))
-                    }
-                  }}
-                />
-                <FieldDescription>{settings.voiceThresholdPercent}%（低いほど小さな音にも反応します）</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="system-prompt">システムプロンプト</FieldLabel>
-                <Textarea
-                  id="system-prompt"
-                  value={settings.system}
-                  onChange={(event) => setSettings((current) => ({ ...current, system: event.target.value }))}
-                  placeholder="空欄なら.envのOPENAI_SYSTEM_PROMPT"
-                  rows={6}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="solo-prompt">録音が無い場合</FieldLabel>
-                <Textarea
-                  id="solo-prompt"
-                  value={settings.soloPrompt}
-                  onChange={(event) => setSettings((current) => ({ ...current, soloPrompt: event.target.value }))}
-                  rows={5}
-                />
-              </Field>
-              <Field>
-                <FieldLabel>ローカルデータ</FieldLabel>
-                <FieldDescription>送信済み録音と会話履歴はサーバーの.dataだけに保存されます。</FieldDescription>
-                <Button variant="destructive" onClick={() => void clearHistory()}>
-                  <Trash2Icon data-icon="inline-start" />
-                  履歴と録音を消去
-                </Button>
-              </Field>
-            </FieldGroup>
+    <main className="mx-auto flex min-h-svh max-w-md items-center p-3">
+      <section className="w-full rounded-xl border bg-background p-4 shadow-sm">
+        <header className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold">tofu-madobe</h1>
+            <p className="text-sm text-muted-foreground">{status(phase, micEnabled)}</p>
           </div>
-        </SheetContent>
-      </Sheet>
+          <button
+            className="rounded border px-2 py-1 text-sm"
+            onClick={() => setCompact((value) => !value)}
+          >
+            {compact ? "展開" : "折りたたむ"}
+          </button>
+        </header>
+        {!compact && (
+          <div className="mt-5 space-y-4">
+            <label className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <MicIcon size={18} />
+                マイク{" "}
+                <small className="text-muted-foreground">
+                  {recorder.bufferedSeconds.toFixed(1)}秒
+                </small>
+              </span>
+              <input
+                type="checkbox"
+                checked={micEnabled}
+                disabled={!running}
+                onChange={(event) => {
+                  setMicEnabled(event.target.checked);
+                  if (running) recorder.setEnabled(event.target.checked);
+                }}
+              />
+            </label>
+            <div>
+              <progress className="w-full" max="100" value={Math.min(100, recorder.level * 1000)} />
+              <p className="text-xs text-muted-foreground">
+                入力 {(recorder.level * 100).toFixed(1)}% / しきい値{" "}
+                {settings.voiceThresholdPercent}%
+              </p>
+            </div>
+            <fieldset>
+              <legend className="mb-2 text-sm font-medium">対話方法</legend>
+              <div className="flex gap-2">
+                {(["manual", "scheduled", "auto"] as Mode[]).map((mode) => (
+                  <label key={mode} className="rounded border px-2 py-1 text-sm">
+                    <input
+                      className="mr-1"
+                      type="radio"
+                      checked={settings.mode === mode}
+                      onChange={() => {
+                        recorder.clear();
+                        update("mode", mode);
+                      }}
+                    />
+                    {{ manual: "手動", scheduled: "定期実行", auto: "自動対話" }[mode]}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            {reply && (
+              <output className="block max-h-44 overflow-auto rounded border p-3 text-sm whitespace-pre-wrap">
+                {audio.playingText || reply}
+              </output>
+            )}
+            {shownError && (
+              <p
+                role="alert"
+                className="rounded border border-destructive p-3 text-sm text-destructive"
+              >
+                {shownError}
+              </p>
+            )}
+          </div>
+        )}
+        <footer className="mt-5 flex flex-wrap gap-2">
+          <button
+            className="rounded bg-primary px-3 py-2 text-primary-foreground"
+            onClick={() => void (running ? stop() : start())}
+          >
+            {running ? (
+              <>
+                <SquareIcon className="mr-1 inline" size={16} />
+                停止
+              </>
+            ) : (
+              <>
+                <PlayIcon className="mr-1 inline" size={16} />
+                常駐を開始
+              </>
+            )}
+          </button>
+          <button
+            className="rounded border px-3 py-2 disabled:opacity-50"
+            onClick={() => void submit("manual")}
+            disabled={!running || phase !== "listening"}
+          >
+            <SendIcon className="mr-1 inline" size={16} />
+            今すぐ送る
+          </button>
+          <button
+            className="ml-auto rounded border p-2"
+            aria-label="小窓で開く"
+            onClick={() =>
+              window.open(
+                location.href,
+                "tofu-madobe",
+                "popup=yes,width=420,height=720,resizable=yes",
+              )
+            }
+          >
+            <PanelTopOpenIcon size={18} />
+          </button>
+          <button
+            className="rounded border p-2"
+            aria-label="設定"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SettingsIcon size={18} />
+          </button>
+        </footer>
+        <p className="mt-3 text-xs text-muted-foreground">
+          VTube Studio: {vtubeConnected ? "接続" : "任意"}
+        </p>
+      </section>
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 grid place-items-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <section className="max-h-full w-full max-w-md overflow-auto rounded-xl bg-background p-5">
+            <header className="flex justify-between">
+              <h2 className="font-semibold">設定</h2>
+              <button onClick={() => setSettingsOpen(false)}>閉じる</button>
+            </header>
+            <div className="mt-4 space-y-4">
+              <label className="block">
+                定期実行の最短秒数
+                <input
+                  className="mt-1 w-full"
+                  type="number"
+                  min="5"
+                  max="1800"
+                  value={settings.minSeconds}
+                  onChange={(event) =>
+                    update("minSeconds", clamp(Number(event.target.value), 5, 1800))
+                  }
+                />
+              </label>
+              <label className="block">
+                定期実行の最長秒数
+                <input
+                  className="mt-1 w-full"
+                  type="number"
+                  min={settings.minSeconds}
+                  max="1800"
+                  value={settings.maxSeconds}
+                  onChange={(event) =>
+                    update(
+                      "maxSeconds",
+                      clamp(Number(event.target.value), settings.minSeconds, 1800),
+                    )
+                  }
+                />
+              </label>
+              <label className="block">
+                自動対話の最低発話秒数
+                <input
+                  className="mt-1 w-full"
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="0.5"
+                  value={settings.autoMinSpeechSeconds}
+                  onChange={(event) =>
+                    update("autoMinSpeechSeconds", clamp(Number(event.target.value), 1, 10))
+                  }
+                />
+              </label>
+              <label className="block">
+                自動対話の無音秒数
+                <input
+                  className="mt-1 w-full"
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="0.5"
+                  value={settings.autoSilenceSeconds}
+                  onChange={(event) =>
+                    update("autoSilenceSeconds", clamp(Number(event.target.value), 1, 10))
+                  }
+                />
+              </label>
+              <label className="block">
+                音声しきい値（%）
+                <input
+                  className="mt-1 w-full"
+                  type="number"
+                  min="0.5"
+                  max="10"
+                  step="0.5"
+                  value={settings.voiceThresholdPercent}
+                  onChange={(event) =>
+                    update("voiceThresholdPercent", clamp(Number(event.target.value), 0.5, 10))
+                  }
+                />
+              </label>
+              <label className="block">
+                システムプロンプト
+                <textarea
+                  className="mt-1 w-full rounded border p-2"
+                  rows={5}
+                  value={settings.system}
+                  onChange={(event) => update("system", event.target.value)}
+                  placeholder="空欄なら.envのOPENAI_SYSTEM_PROMPT"
+                />
+              </label>
+              <label className="block">
+                録音が無い場合
+                <textarea
+                  className="mt-1 w-full rounded border p-2"
+                  rows={4}
+                  value={settings.soloPrompt}
+                  onChange={(event) => update("soloPrompt", event.target.value)}
+                />
+              </label>
+              <button
+                className="rounded border border-destructive px-3 py-2 text-destructive"
+                onClick={() => setHistory([])}
+              >
+                この画面の会話履歴を消去
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
-  )
+  );
 }

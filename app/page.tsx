@@ -1,5 +1,5 @@
-import { Companion } from "@/components/companion"
+import { Companion } from "@/components/companion";
 
 export default function Page() {
-  return <Companion />
+  return <Companion />;
 }
