@@ -11,10 +11,19 @@ export async function GET(request: Request) {
   const min = numberParam(url, "min", 180);
   const max = Math.max(min, numberParam(url, "max", 420));
   const delayMs = (min + Math.floor(Math.random() * (max - min + 1))) * 1000;
+  const requestId = crypto.randomUUID();
+  const scope = `schedule:${requestId}`;
+  debugLog(scope, "timer created", {
+    minSeconds: min,
+    maxSeconds: max,
+    delayMs,
+    dueAt: new Date(Date.now() + delayMs).toISOString(),
+  });
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const timer = setTimeout(() => {
+        debugLog(scope, "timer due");
         controller.enqueue(
           encoder.encode(
             `event: due\ndata: ${JSON.stringify({ dueAt: new Date().toISOString() })}\n\n`,
@@ -25,6 +34,7 @@ export async function GET(request: Request) {
       request.signal.addEventListener(
         "abort",
         () => {
+          debugWarn(scope, "timer connection aborted");
           clearTimeout(timer);
           try {
             controller.close();
@@ -44,3 +54,4 @@ export async function GET(request: Request) {
     },
   });
 }
+import { debugLog, debugWarn } from "@/lib/debug-log";
