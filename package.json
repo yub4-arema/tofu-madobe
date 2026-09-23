@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "dev:local": "next dev",
+    "dev:local": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/start-local.mjs dev",
     "build": "next build",
     "start": "next start",
-    "start:local": "next start",
+    "start:local": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/start-local.mjs start",
     "test": "node --test test/*.test.ts",
     "analyze:logs": "node scripts/analyze-logs.mjs",
     "lint": "oxlint",

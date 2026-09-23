@@ -4,16 +4,17 @@ import { debugError, debugLog, debugWarn } from "../debug-log";
 import { audioStore } from "./audio-store";
 import { generateReply, type ChatMessage } from "./llm";
 import { utauTts } from "./utautts";
+import { voicevoxTts } from "./voicevox";
 
 const sentencePattern = /[^。、！？!?]+[。、！？!?]+/g;
 const avatarContext = [
   "あなたは文字チャット欄のアシスタントではなく、ユーザーの画面上に常駐する音声AIアバターmadobe本人です。",
   "ユーザーは目の前のあなたへマイクで話しており、入力文はScribeによるリアルタイム音声認識なので、言い淀みや未完の文を含むことがあります。",
-  "あなたの返答はUTAUで直ちに読み上げられ、VTube Studioのアバターが表情やモーションを表示します。",
+  "あなたの返答は音声合成で直ちに読み上げられ、VTube Studioのアバターが表情やモーションを表示します。",
   "一人のユーザーとの自然な話し言葉として返答し、STT、TTS、ホットキーなどの内部状態は依頼されない限り読み上げないでください。",
 ].join("\n");
 
-function splitForUtau(text: string) {
+function splitForTts(text: string) {
   const characters = Array.from(text);
   return Array.from({ length: Math.ceil(characters.length / 500) }, (_, index) =>
     characters.slice(index * 500, (index + 1) * 500).join(""),
@@ -26,6 +27,8 @@ export async function writeTurn(options: {
   system?: string;
   preface?: string;
   fixedReply?: string;
+  ttsProvider: "utau" | "voicevox";
+  voicevoxSpeaker: number;
   signal: AbortSignal;
   write: (event: TurnEvent) => void;
 }) {
@@ -54,7 +57,7 @@ export async function writeTurn(options: {
   let synthesis = Promise.resolve();
 
   const enqueue = (raw: string) => {
-    for (const text of splitForUtau(raw.trim())) {
+    for (const text of splitForTts(raw.trim())) {
       if (!text) continue;
       const index = ++sentenceIndex;
       spoken.push(text);
@@ -66,14 +69,30 @@ export async function writeTurn(options: {
         }
         const synthesisStartedAt = Date.now();
         debugLog(scope, "sentence synthesis started", { sentenceIndex: index, text });
-        const id = randomUUID();
+        let audioUrl: string;
         try {
-          const audio = await utauTts.synthesize(text, options.signal, options.requestId, index);
-          audioStore.set(id, audio);
+          if (options.ttsProvider === "voicevox") {
+            audioUrl = await voicevoxTts.synthesize(
+              text,
+              options.voicevoxSpeaker,
+              options.signal,
+              options.requestId,
+              index,
+            );
+          } else {
+            const id = randomUUID();
+            const audio = await utauTts.synthesize(text, options.signal, options.requestId, index);
+            audioStore.set(id, audio);
+            audioUrl = `/api/audio/${id}`;
+            debugLog(scope, "sentence audio stored", {
+              sentenceIndex: index,
+              audioId: id,
+              bytes: audio.byteLength,
+            });
+          }
           debugLog(scope, "sentence audio ready", {
             sentenceIndex: index,
-            audioId: id,
-            bytes: audio.byteLength,
+            provider: options.ttsProvider,
             elapsedMs: Date.now() - synthesisStartedAt,
           });
         } catch (error) {
@@ -82,13 +101,22 @@ export async function writeTurn(options: {
             elapsedMs: Date.now() - synthesisStartedAt,
             aborted: options.signal.aborted,
           });
-          throw error;
+          options.write({
+            type: "audio.error",
+            sentenceIndex: index,
+            text,
+            error: {
+              code: "TTS_FAILED",
+              message: error instanceof Error ? error.message : "音声合成に失敗しました。",
+            },
+          });
+          return;
         }
         options.write({
           type: "audio.ready",
           sentenceIndex: index,
           text,
-          audioUrl: `/api/audio/${id}`,
+          audioUrl,
         });
       });
     }

@@ -47,7 +47,7 @@ export const utauTts = {
         elapsedMs: Date.now() - startedAt,
         aborted: signal?.aborted ?? false,
       });
-      throw error;
+      throw new Error(`UtauTTSへ接続できません: ${url}`, { cause: error });
     }
     debugLog(scope, "synthesis response headers received", {
       status: response.status,

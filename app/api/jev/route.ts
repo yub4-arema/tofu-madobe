@@ -390,11 +390,11 @@ export async function POST(request: Request) {
     text,
   }));
   const actionCriteria: Record<string, string> = {
-    wait: "今この1秒間だけ発声せず聞き役に徹するのが自然な場合に限って選ぶ。相づちを打つべきタイミング、ユーザーが返答を求めている場合、または十分な沈黙がある場合はwaitを選ばない。迷った場合の既定値としてwaitを使ってはいけない。",
+    wait: "今この0.5秒間だけ発声せず聞き役に徹するのが自然な場合に限って選ぶ。相づちを打つべきタイミング、ユーザーが返答を求めている場合、または十分な沈黙がある場合はwaitを選ばない。迷った場合の既定値としてwaitを使ってはいけない。",
     backchannel:
       "ユーザーが発話中であり、相手の発話を遮らずに『うん』『なるほど』などの短い相づちを1回挟んで傾聴の姿勢を示す。相づちクールダウンが0で、ユーザーの話が数秒以上続いている場合に選ぶ",
     respond:
-      "今ここでLLMへ返答生成を依頼する。ユーザーが発話を終えた、返答を求めた、質問が十分明確、または会話上すぐ返すべきと判断した場合に選ぶ。partial.textが疑問・依頼として文意が完結していて（「〜だったっけ？」「〜って何？」「〜を教えて」など）unchangedForSecondsが1.0以上の場合は、confirmedが空でもrespondを選ぶ。commitを待つ必要はない。返答内容や方向性はJevで決めず、LLMへ任せる",
+      "今ここでLLMへ返答生成を依頼する。ユーザーが発話を終えた、返答を求めた、質問が十分明確、または会話上すぐ返すべきと判断した場合に選ぶ。partial.textが疑問・依頼として文意が完結していて（「〜だったっけ？」「〜って何？」「〜を教えて」など）unchangedForSecondsが0.6以上の場合は、confirmedが空でもrespondを選ぶ。commitを待つ必要はない。返答内容や方向性はJevで決めず、LLMへ任せる",
     interrupt: "緊急の訂正、停止要求、明確な発話権の奪取など、本当に今の発話へ割り込む必要がある",
     topic:
       "ユーザー入力がなく、未応答のconfirmedもなく、会話が空いて十分な時間が経過したため自分から新しい話題を始める。ユーザーの発話への返答ならrespondを選ぶ",
@@ -438,7 +438,7 @@ export async function POST(request: Request) {
       action: {
         type: "choice",
         instructions:
-          "デスクトップ常駐AItuberが今この1秒tickで取る会話上の行動を一つ選んでください。partial.textはScribeが現在認識中の未確定全文、confirmedはVADで確定した区間です。各confirmedにはcommittedAgoSecondsがあり、発話が確定してから何秒経ったかを示します。Jevは返答内容・話題・説明の方向性を作りません。Jevが決めるのは、今だけ待つ、定型相づちを返す、LLMへ返答生成を依頼する、本当に割り込む、自発話を始める、のタイミングだけです。未応答のconfirmedが残っている場合、明示的な待機指定が有効な間を除き、waitを繰り返さずrespondを選んでください。ユーザーが『N秒後に話して』と指定している場合は、現在時刻・committedAgoSeconds・sinceLastCommitMsを比較し、指定時間を過ぎたらrespondまたはtopicを選んでください。ユーザーが継続して話しており相づちクールダウンが0なら、聞き手として積極的にbackchannelを選んでください。固定相づちの再生中だけは新しい発話を開始せずwaitを選んでください。partial.textが疑問・依頼として文意が完結していて（例：「〜だったっけ？」「〜って何？」「〜を教えて」「なんだっけなあ」）unchangedForSecondsが1.0以上であればconfirmedが空でもrespondを選んでください。commitを待つ必要はありません。",
+          "デスクトップ常駐AItuberが今この0.5秒tickで取る会話上の行動を一つ選んでください。partial.textはScribeが現在認識中の未確定全文、confirmedはVADで確定した区間です。各confirmedにはcommittedAgoSecondsがあり、発話が確定してから何秒経ったかを示します。Jevは返答内容・話題・説明の方向性を作りません。Jevが決めるのは、今だけ待つ、定型相づちを返す、LLMへ返答生成を依頼する、本当に割り込む、自発話を始める、のタイミングだけです。未応答のconfirmedが残っている場合、明示的な待機指定が有効な間を除き、waitを繰り返さずrespondを選んでください。ユーザーが『N秒後に話して』と指定している場合は、現在時刻・committedAgoSeconds・sinceLastCommitMsを比較し、指定時間を過ぎたらrespondまたはtopicを選んでください。ユーザーが継続して話しており相づちクールダウンが0なら、聞き手として積極的にbackchannelを選んでください。固定相づちの再生中だけは新しい発話を開始せずwaitを選んでください。partial.textが疑問・依頼として文意が完結していて（例：「〜だったっけ？」「〜って何？」「〜を教えて」「なんだっけなあ」）unchangedForSecondsが0.6以上であればconfirmedが空でもrespondを選んでください。commitを待つ必要はありません。",
         criteria: actionCriteria,
       },
       backchannel_phrase: {

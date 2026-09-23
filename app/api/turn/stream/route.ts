@@ -32,6 +32,8 @@ type Input = {
   soloPrompt?: string;
   interruptCue?: string;
   fixedReply?: string;
+  ttsProvider: "utau" | "voicevox";
+  voicevoxSpeaker: number;
   hotkey?: VTubeHotkey;
   timing?: ConversationTiming;
   recentBackchannel?: RecentBackchannel;
@@ -131,6 +133,20 @@ function parse(value: unknown): Input | null {
     typeof body.fixedReply === "string"
       ? Array.from(body.fixedReply.trim()).slice(0, 40).join("")
       : undefined;
+  if (
+    body.ttsProvider !== undefined &&
+    body.ttsProvider !== "utau" &&
+    body.ttsProvider !== "voicevox"
+  )
+    return null;
+  const voicevoxSpeaker = body.voicevoxSpeaker;
+  if (
+    voicevoxSpeaker !== undefined &&
+    (typeof voicevoxSpeaker !== "number" ||
+      !Number.isInteger(voicevoxSpeaker) ||
+      voicevoxSpeaker < 0)
+  )
+    return null;
   if (trigger === "user" && !text) return null;
   if (
     trigger === "jev" &&
@@ -160,6 +176,8 @@ function parse(value: unknown): Input | null {
     interruptCue:
       typeof body.interruptCue === "string" ? body.interruptCue.trim().slice(0, 200) : undefined,
     fixedReply,
+    ttsProvider: body.ttsProvider === "voicevox" ? "voicevox" : "utau",
+    voicevoxSpeaker: typeof voicevoxSpeaker === "number" ? voicevoxSpeaker : 3,
     hotkey: hotkey(body.hotkey),
     timing: timing(body.timing),
     recentBackchannel: recentBackchannel(body.recentBackchannel),
@@ -231,6 +249,8 @@ export async function POST(request: Request) {
     soloPrompt: input.soloPrompt,
     interruptCue: input.interruptCue,
     fixedReply: input.fixedReply,
+    ttsProvider: input.ttsProvider,
+    voicevoxSpeaker: input.voicevoxSpeaker,
     hotkey: input.hotkey,
     timing: input.timing,
     recentBackchannel: input.recentBackchannel,
@@ -269,6 +289,8 @@ export async function POST(request: Request) {
           system: input.system,
           preface: input.interruptCue,
           fixedReply: input.fixedReply,
+          ttsProvider: input.ttsProvider,
+          voicevoxSpeaker: input.voicevoxSpeaker,
           signal: request.signal,
           write,
         })

@@ -11,7 +11,13 @@ import {
 } from "lucide-react";
 import { useAudioQueue } from "@/hooks/use-audio-queue";
 import { useScribe } from "@/hooks/use-scribe";
-import { debugError, debugLog, debugWarn, type DebugDetails } from "@/lib/debug-log";
+import {
+  debugError,
+  debugLog,
+  debugWarn,
+  startDebugLogSession,
+  type DebugDetails,
+} from "@/lib/debug-log";
 import {
   canApplyJevAction,
   canPlayBackchannel,
@@ -510,6 +516,8 @@ export function Companion() {
           soloPrompt,
           interruptCue: options.interruptCue,
           fixedReply: options.fixedReply,
+          ttsProvider: settingsRef.current.ttsProvider,
+          voicevoxSpeaker: settingsRef.current.voicevoxSpeaker,
           hotkey: options.hotkey,
           recentBackchannel,
           interruptedAssistant,
@@ -529,6 +537,8 @@ export function Companion() {
             soloPrompt,
             interruptCue: options.interruptCue,
             fixedReply: options.fixedReply,
+            ttsProvider: settingsRef.current.ttsProvider,
+            voicevoxSpeaker: settingsRef.current.voicevoxSpeaker,
             hotkey: options.hotkey,
             recentBackchannel,
             interruptedAssistant,
@@ -592,6 +602,7 @@ export function Companion() {
               },
             });
           }
+          if (value.type === "audio.error") setError(value.error.message);
           if (value.type === "turn.completed") {
             completedText = value.text;
             setReply(value.text);
@@ -946,7 +957,7 @@ export function Companion() {
         return;
       }
       if (jevInFlightRef.current) {
-        debugLog("companion:jev", "one-second evaluation skipped while request is in flight", {
+        debugLog("companion:jev", "evaluation skipped while request is in flight", {
           latestRequestedRevision: jevRequestRevisionRef.current,
           transcriptRevision: transcriptRevisionRef.current,
         });
@@ -1094,7 +1105,7 @@ export function Companion() {
           setError(caught instanceof Error ? caught.message : "Jevへ接続できません。");
       } finally {
         jevInFlightRef.current = false;
-        debugLog(scope, "request settled; next evaluation remains on one-second clock");
+        debugLog(scope, "request settled; next evaluation remains on clock");
       }
     },
     [applyJev, audioBusy, playingText, timingSnapshot],
@@ -1159,7 +1170,7 @@ export function Companion() {
       return;
     }
     maybeRunScheduledRef.current();
-    debugLog("companion:jev", "buffered input will be evaluated on the one-second clock", {
+    debugLog("companion:jev", "buffered input will be evaluated on the clock", {
       hasConfirmed: !!confirmedRef.current.length,
       hasPartial: !!unhandledPartial(partialRef.current, handledPartialRef.current),
     });
@@ -1167,11 +1178,11 @@ export function Companion() {
 
   useEffect(() => {
     if (!running || settings.mode !== "natural") return;
-    debugLog("companion:jev", "one-second evaluation timer started");
-    const timer = window.setInterval(() => evaluateJevRef.current("clock_tick"), 1000);
+    debugLog("companion:jev", "500ms evaluation timer started");
+    const timer = window.setInterval(() => evaluateJevRef.current("clock_tick"), 500);
     return () => {
       window.clearInterval(timer);
-      debugLog("companion:jev", "one-second evaluation timer stopped");
+      debugLog("companion:jev", "500ms evaluation timer stopped");
     };
   }, [running, settings.mode]);
 
@@ -1226,6 +1237,14 @@ export function Companion() {
   }, [changed, running, settings.mode]);
 
   const start = async () => {
+    try {
+      const logFile = await startDebugLogSession(
+        settingsRef.current.mode === "natural" ? "natural" : "default",
+      );
+      if (logFile) debugLog("companion", "log session started", { logFile });
+    } catch (caught) {
+      debugError("companion", "log session start failed", caught);
+    }
     debugLog("companion", "start requested", { micEnabled, settings: settingsRef.current });
     runningRef.current = true;
     conversationStartedAtRef.current = Date.now();
@@ -1430,6 +1449,39 @@ export function Companion() {
               <button onClick={() => setSettingsOpen(false)}>閉じる</button>
             </header>
             <div className="mt-4 space-y-4">
+              <label className="block">
+                音声合成
+                <select
+                  className="mt-1 w-full rounded border p-2"
+                  value={settings.ttsProvider}
+                  onChange={(event) =>
+                    update("ttsProvider", event.target.value === "voicevox" ? "voicevox" : "utau")
+                  }
+                >
+                  <option value="utau">UtauTTS（ローカル）</option>
+                  <option value="voicevox">VOICEVOX（tts.quest）</option>
+                </select>
+              </label>
+              {settings.ttsProvider === "voicevox" && (
+                <label className="block">
+                  VOICEVOX 話者ID
+                  <input
+                    className="mt-1 w-full"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={settings.voicevoxSpeaker}
+                    onChange={(event) => {
+                      const speaker = Number(event.target.value);
+                      if (Number.isInteger(speaker) && speaker >= 0)
+                        update("voicevoxSpeaker", speaker);
+                    }}
+                  />
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    高速化には有効なAPI keyと残ポイントが必要です。未設定・無効・ポイント切れでも使えますが、低速になります（.env.localのVOICEVOX_API_KEY）。
+                  </span>
+                </label>
+              )}
               {settings.scheduledEnabled && (
                 <>
                   <label className="block">

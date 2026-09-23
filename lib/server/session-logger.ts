@@ -1,4 +1,5 @@
 import { appendFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 export type LogEntry = {
@@ -10,8 +11,26 @@ export type LogEntry = {
 };
 
 const logDirectory = path.join(process.cwd(), ".data", "logs");
-const logFile = path.join(logDirectory, "session.ndjson");
+const defaultLogFile = path.join(logDirectory, "session.ndjson");
+let activeLogFile = defaultLogFile;
 let writeTail = Promise.resolve();
+
+export function startLogSession(mode: "natural" | "default") {
+  const fileName =
+    mode === "natural"
+      ? `natural-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.ndjson`
+      : "session.ndjson";
+  const nextLogFile = path.join(logDirectory, fileName);
+  const rotation = writeTail.then(async () => {
+    await mkdir(logDirectory, { recursive: true });
+    await appendFile(nextLogFile, "", "utf8");
+    activeLogFile = nextLogFile;
+  });
+  writeTail = rotation.catch((error: unknown) => {
+    console.error("session-logger: session switch failed", error);
+  });
+  return rotation.then(() => fileName);
+}
 
 export function appendLogEntries(entries: LogEntry[]) {
   if (!entries.length) return;
@@ -19,7 +38,7 @@ export function appendLogEntries(entries: LogEntry[]) {
   writeTail = writeTail
     .then(async () => {
       await mkdir(logDirectory, { recursive: true });
-      await appendFile(logFile, lines, "utf8");
+      await appendFile(activeLogFile, lines, "utf8");
     })
     .catch((error: unknown) => {
       console.error("session-logger: file append failed", error);

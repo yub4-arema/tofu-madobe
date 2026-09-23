@@ -85,7 +85,6 @@ export type JevActionResponse = {
   diagnostics?: Record<string, unknown>;
 };
 
-
 export type JevFloorResponse = {
   revision: number;
   kind: "floor";
@@ -95,7 +94,6 @@ export type JevFloorResponse = {
 
 export type JevResponse = JevActionResponse | JevFloorResponse;
 
-
 export type TurnEvent =
   | { type: "text.delta"; delta: string }
   | {
@@ -104,6 +102,12 @@ export type TurnEvent =
       text: string;
       audioUrl: string;
     }
+  | {
+      type: "audio.error";
+      sentenceIndex: number;
+      text: string;
+      error: { code: string; message: string };
+    }
   | { type: "turn.completed"; text: string }
   | { type: "turn.error"; error: { code: string; message: string } };
 
@@ -111,7 +115,7 @@ export function isTurnEvent(value: unknown): value is TurnEvent {
   return (
     !!value &&
     typeof value === "object" &&
-    ["text.delta", "audio.ready", "turn.completed", "turn.error"].includes(
+    ["text.delta", "audio.ready", "audio.error", "turn.completed", "turn.error"].includes(
       String((value as TurnEvent).type),
     )
   );

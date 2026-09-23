@@ -41,7 +41,7 @@ export async function* generateReply(
     basicAuthConfigured: !!process.env.OPENAI_BASIC_AUTH_USERNAME,
     messageCount: messages.length,
     messages,
-    reasoningEffort: "low",
+    reasoningEffort: "minimal",
   });
   let stream;
   try {
@@ -50,7 +50,7 @@ export async function* generateReply(
         model,
         messages,
         stream: true,
-        reasoning_effort: "low",
+        reasoning_effort: "minimal",
       },
       { signal },
     );

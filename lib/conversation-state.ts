@@ -21,6 +21,8 @@ export type Settings = {
   scheduledEnabled: boolean;
   minSeconds: number;
   maxSeconds: number;
+  ttsProvider: "utau" | "voicevox";
+  voicevoxSpeaker: number;
   system: string;
   soloPrompt: string;
   interruptPhrases: string;
@@ -32,6 +34,8 @@ export const defaultSettings: Settings = {
   scheduledEnabled: true,
   minSeconds: 180,
   maxSeconds: 420,
+  ttsProvider: "utau",
+  voicevoxSpeaker: 3,
   system: "",
   soloPrompt:
     "直近の話題と重複しない、聞いて楽しめる短い話題を一つ自然に話してください。待機や自動発言には触れないでください。",
@@ -88,6 +92,13 @@ export function migrateSettings(value: unknown): Settings {
     scheduledEnabled,
     minSeconds,
     maxSeconds: Math.max(minSeconds, seconds(saved.maxSeconds, defaultSettings.maxSeconds)),
+    ttsProvider: saved.ttsProvider === "voicevox" ? "voicevox" : "utau",
+    voicevoxSpeaker:
+      typeof saved.voicevoxSpeaker === "number" &&
+      Number.isInteger(saved.voicevoxSpeaker) &&
+      saved.voicevoxSpeaker >= 0
+        ? saved.voicevoxSpeaker
+        : defaultSettings.voicevoxSpeaker,
     system: typeof saved.system === "string" ? saved.system : defaultSettings.system,
     soloPrompt:
       typeof saved.soloPrompt === "string" ? saved.soloPrompt : defaultSettings.soloPrompt,

@@ -12,6 +12,7 @@ import {
   transcriptSnapshot,
   unhandledPartial,
 } from "../lib/conversation-state.ts";
+import { isTurnEvent } from "../lib/protocol.ts";
 
 test("legacy settings, scheduled overlay, and stale Jev revisions", () => {
   assert.deepEqual(
@@ -23,6 +24,15 @@ test("legacy settings, scheduled overlay, and stale Jev revisions", () => {
       ["normal", false],
       ["normal", true],
       ["natural", false],
+    ],
+  );
+  assert.deepEqual(
+    [migrateSettings({}), migrateSettings({ ttsProvider: "voicevox", voicevoxSpeaker: 7 })].map(
+      ({ ttsProvider, voicevoxSpeaker }) => [ttsProvider, voicevoxSpeaker],
+    ),
+    [
+      ["utau", 3],
+      ["voicevox", 7],
     ],
   );
   assert.equal(scheduledFollowUp("normal", true, false), "normal");
@@ -43,6 +53,15 @@ test("legacy settings, scheduled overlay, and stale Jev revisions", () => {
   assert.equal(canApplyJevAction("respond", false), true);
   assert.equal(allowsTextlessJevTurn("respond", "clock_tick"), true);
   assert.equal(allowsTextlessJevTurn("topic", "clock_tick"), true);
+  assert.equal(
+    isTurnEvent({
+      type: "audio.error",
+      sentenceIndex: 1,
+      text: "こんにちは。",
+      error: { code: "TTS_FAILED", message: "UtauTTSへ接続できません" },
+    }),
+    true,
+  );
   assert.equal(unhandledPartial("今日は晴れですね", "今日は晴れ"), "ですね");
   assert.equal(unhandledPartial("今日は雨です", "今日は晴れ"), "今日は雨です");
 

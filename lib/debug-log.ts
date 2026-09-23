@@ -43,16 +43,16 @@ function sanitize(value: unknown, depth = 0): unknown {
 const clientBuffer: LogEntry[] = [];
 let clientFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-function flushClientBuffer() {
+async function flushClientBuffer() {
   if (clientBuffer.length === 0 || typeof window === "undefined") return;
   const batch = clientBuffer.splice(0, clientBuffer.length);
   try {
-    void fetch("/api/log", {
+    await fetch("/api/log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(batch),
       keepalive: true,
-    }).catch(() => {});
+    });
   } catch {
     // Ignore fetch errors during log flush
   }
@@ -63,15 +63,30 @@ function scheduleClientFlush() {
   if (clientBuffer.length >= 20) {
     if (clientFlushTimer) clearTimeout(clientFlushTimer);
     clientFlushTimer = null;
-    flushClientBuffer();
+    void flushClientBuffer();
     return;
   }
   if (!clientFlushTimer) {
     clientFlushTimer = setTimeout(() => {
       clientFlushTimer = null;
-      flushClientBuffer();
+      void flushClientBuffer();
     }, 1000);
   }
+}
+
+export async function startDebugLogSession(mode: "natural" | "default") {
+  if (typeof window === "undefined") return null;
+  if (clientFlushTimer) clearTimeout(clientFlushTimer);
+  clientFlushTimer = null;
+  await flushClientBuffer();
+  const response = await fetch("/api/log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session: mode }),
+  });
+  if (!response.ok) throw new Error(`ログセッションの開始に失敗しました: ${response.status}`);
+  const result = (await response.json()) as { fileName?: unknown };
+  return typeof result.fileName === "string" ? result.fileName : null;
 }
 
 function recordLog(entry: LogEntry) {
